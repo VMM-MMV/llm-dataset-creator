@@ -393,7 +393,7 @@ function buildRowsFromAlignedPairs(pairs, validatedSet){
       emitSingleSideBlock(rIdx, rObj, 'added', indent+'  ', 'right');
     }
 
-    // Close object with comma (we’ll let the very last object also have a trailing comma for simplicity)
+    // Close object with comma (we'll let the very last object also have a trailing comma for simplicity)
     pushRow(indent+'},', indent+'},', '', lIdx ?? rIdx, null);
   }
 
@@ -644,19 +644,31 @@ function acceptValue(objIndex, fieldPath, side, rowIndex){
   if (!Array.isArray(lObj.validated)) lObj.validated = [];
   if (!lObj.validated.includes(fieldPath)) lObj.validated.push(fieldPath);
 
+  // Preserve scroll positions of ALL panes before re-render
+  const leftScroll = leftPane.scrollTop;
+  const rightScroll = rightPane.scrollTop;
+  const gutterScroll = gutterPane.scrollTop;
+
   // Recompute alignment after changes (keeps blocks smart)
   alignment = computeAlignment(leftData, rightData);
 
-  // Preserve scroll pos of driver
-  const s = driverPane.scrollTop;
+  // Re-render current page
   renderIfReady();
-  driverPane.scrollTop = s;
+
+  // Restore scroll positions for all panes
+  requestAnimationFrame(() => {
+    leftPane.scrollTop = leftScroll;
+    rightPane.scrollTop = rightScroll;
+    gutterPane.scrollTop = gutterScroll;
+  });
 
   // Flash row if still visible
-  const l = leftCode.querySelector(`.line[data-row="${rowIndex}"]`);
-  const r = rightCode.querySelector(`.line[data-row="${rowIndex}"]`);
-  const g = gutterCode.querySelector(`.gutter-line[data-row="${rowIndex}"]`);
-  [l,r,g].forEach(el => { if(el){ el.classList.add('flash'); setTimeout(()=>el.classList.remove('flash'), 600); } });
+  requestAnimationFrame(() => {
+    const l = leftCode.querySelector(`.line[data-row="${rowIndex}"]`);
+    const r = rightCode.querySelector(`.line[data-row="${rowIndex}"]`);
+    const g = gutterCode.querySelector(`.gutter-line[data-row="${rowIndex}"]`);
+    [l,r,g].forEach(el => { if(el){ el.classList.add('flash'); setTimeout(()=>el.classList.remove('flash'), 600); } });
+  });
 }
 
 /* ==============================
