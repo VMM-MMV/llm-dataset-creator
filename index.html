@@ -56,6 +56,13 @@
     border-right:1px solid var(--line-border);
     contain: strict;
   }
+  .pane:not(.right), .gutter {
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* IE/Edge */
+  }
+  .pane:not(.right)::-webkit-scrollbar, .gutter::-webkit-scrollbar {
+    display: none; /* Chrome/Safari/Opera */
+  }
   .gutter { background: var(--gutter); border-right:1px solid var(--line-border); }
   .pane.right { border-right:none; border-left:1px solid var(--line-border); }
 
