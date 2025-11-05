@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>JSON Comparison Validator — VS Code Style (Semantic Alignment)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    --bg: #1e1e1e;
+    --panel: #252526;
+    --fg: #d4d4d4;
+    --gutter: #2d2d2d;
+    --accent: #007acc;
+    --line-border: #2a2a2a;
+    --diff-yellow: #604b00;   /* field differs, not validated */
+    --diff-red: #5c1a1a;      /* field differs, validated */
+    --added-green: #113711;   /* object added on RIGHT */
+    --removed-red: #3a1616;   /* object removed from RIGHT (exists only on LEFT) */
+    --missing-gray: #3a3a3a;  /* fallback single-side presence */
+    --flash: #3fa33f;
+    --hover: rgba(14,99,156,0.28);
+    --muted: #9fa1a3;
+    --pad-bg: #202020;
+    --pad-fg: #444;
+  }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+    font:13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+  header {
+    display:flex; gap:12px; align-items:center; padding:10px 12px; background:var(--panel);
+    border-bottom:1px solid var(--line-border); position:sticky; top:0; z-index:5;
+  }
+  input[type="file"] { color: var(--muted); }
+  button {
+    background: var(--accent); color:#fff; border:none; border-radius:4px; padding:6px 10px; cursor:pointer;
+  }
+  button:hover { filter: brightness(0.95); }
+  select {
+    background:#1f1f1f; color:#ddd; border:1px solid #555; border-radius:4px; padding:4px 6px;
+  }
+  .legend { margin-left:auto; display:flex; gap:10px; align-items:center; color:#bbb; font-size:12px; }
+  .tag { display:inline-block; padding:2px 6px; border-radius:3px; background:#333; }
+  .tag.diff { background: var(--diff-yellow); color:#fff; }
+  .tag.error { background: var(--diff-red); color:#fff; }
+  .tag.added { background: var(--added-green); color:#fff; }
+  .tag.removed { background: var(--removed-red); color:#fff; }
+
+  .content {
+    display:grid;
+    grid-template-columns: 1fr 54px 1fr; /* left | gutter | right */
+    height: calc(100vh - 54px - 46px);
+  }
+
+  .pane, .gutter {
+    overflow:auto;
+    background:var(--bg);
+    border-right:1px solid var(--line-border);
+    contain: strict;
+  }
+  .gutter { background: var(--gutter); border-right:1px solid var(--line-border); }
+  .pane.right { border-right:none; border-left:1px solid var(--line-border); }
+
+  .code { display:flex; flex-direction:column; }
+  .line, .gutter-line, .pad-line, .pad-gutter-line {
+    display:flex; align-items:stretch; min-height:20px;
+    border-bottom:1px solid #232323;
+  }
+  .ln {
+    width: 48px; text-align:right; padding:0 6px; color:var(--muted); user-select:none;
+    background:#202020; border-right:1px solid #282828; flex:none; display:flex; align-items:center; justify-content:flex-end;
+  }
+  .txt {
+    flex:1; padding: 0 8px; white-space: pre; overflow: hidden; display:flex; align-items:center;
+  }
+
+  /* Field-level coloring */
+  .diff { background: var(--diff-yellow); }
+  .error { background: var(--diff-red); }
+  .missing { background: var(--missing-gray); }
+
+  /* Object-level added/removed blocks */
+  .added { background: var(--added-green); }
+  .removed { background: var(--removed-red); }
+
+  .flash { animation: flash 0.6s ease-out; }
+  @keyframes flash { from { background: var(--flash); } to { background: inherit; } }
+
+  /* Gutter controls */
+  .gutter-line { justify-content:center; position:relative; }
+  .controls {
+    display:none; gap:6px; position:absolute; left:50%; transform:translateX(-50%);
+  }
+  .controls button {
+    background: transparent; border:1px solid #bbb; color:#eee; padding:0 6px; height:18px; line-height:16px; border-radius:3px;
+  }
+  .controls button:hover { border-color:#fff; }
+
+  /* Hover highlight across all three columns */
+  .hover { background: var(--hover) !important; }
+
+  /* Show controls only on diff/error/missing/added/removed leaf rows when hovered */
+  .gutter-line.hover .controls.diff-only { display:flex; }
+
+  /* Sticky footer pagination */
+  footer {
+    position: sticky; bottom: 0; z-index: 5;
+    display:flex; align-items:center; gap:12px;
+    background: var(--panel); border-top:1px solid var(--line-border);
+    padding: 8px 12px;
+  }
+  .spacer { flex:1; }
+  .page-info { color:#bbb; }
+
+  /* Padded filler lines */
+  .pad-line, .pad-gutter-line {
+    background: var(--pad-bg);
+    color: var(--pad-fg);
+  }
+  .pad-line .ln { background: var(--pad-bg); color: var(--pad-fg); border-right:1px solid #2a2a2a; }
+  .pad-line .txt, .pad-gutter-line { justify-content:center; }
+</style>
+</head>
+<body>
+<header>
+  <label>Left JSON: <input type="file" id="leftFile" accept=".json" /></label>
+  <label>Right JSON: <input type="file" id="rightFile" accept=".json" /></label>
+  <button id="downloadBtn">Download Left JSON</button>
+  <div class="legend">
+    <span class="tag diff">Different (not validated)</span>
+    <span class="tag error">Different (validated)</span>
+    <span class="tag added">Added (right only)</span>
+    <span class="tag removed">Removed (left only)</span>
+  </div>
+</header>
+
+<div class="content">
+  <div id="leftPane" class="pane">
+    <div id="leftCode" class="code"></div>
+  </div>
+  <div id="gutter" class="gutter">
+    <div id="gutterCode" class="code"></div>
+  </div>
+  <div id="rightPane" class="pane right">
+    <div id="rightCode" class="code"></div>
+  </div>
+</div>
+
+<footer>
+  <button id="prevBtn">← Prev</button>
+  <span class="page-info" id="pageInfo">Page 1 of 1</span>
+  <button id="nextBtn">Next →</button>
+  <div class="spacer"></div>
+  <label>Show
+    <select id="pageSize">
+      <option>25</option>
+      <option selected>50</option>
+      <option>100</option>
+      <option>200</option>
+    </select>
+    per page
+  </label>
+</footer>
+
+<script>
+/* ==============================
+   State & Elements
+============================== */
+let leftData = null, rightData = null; // full arrays [{path, extraction, validated}, ...]
+let alignment = []; // [{l: index|null, r: index|null}] across FULL arrays
+const leftPane = document.getElementById('leftPane');
+const rightPane = document.getElementById('rightPane');
+const gutterPane = document.getElementById('gutter');
+const leftCode = document.getElementById('leftCode');
+const rightCode = document.getElementById('rightCode');
+const gutterCode = document.getElementById('gutterCode');
+
+const prevBtn = document.getElementById('prevBtn');
+const nextBtn = document.getElementById('nextBtn');
+const pageInfo = document.getElementById('pageInfo');
+const pageSizeSel = document.getElementById('pageSize');
+document.getElementById('leftFile').addEventListener('change', e => loadFile(e, true));
+document.getElementById('rightFile').addEventListener('change', e => loadFile(e, false));
+document.getElementById('downloadBtn').addEventListener('click', downloadLeft);
+
+/* Pagination */
+let currentPage = 1;     // 1-based
+let pageSize = parseInt(pageSizeSel.value, 10);
+let totalPages = 1;
+pageSizeSel.addEventListener('change', () => { pageSize = parseInt(pageSizeSel.value, 10); currentPage = 1; renderIfReady(); resetScroll(); });
+prevBtn.addEventListener('click', () => { if (currentPage > 1) { currentPage--; renderIfReady(); resetScroll(); }});
+nextBtn.addEventListener('click', () => { if (currentPage < totalPages) { currentPage++; renderIfReady(); resetScroll(); }});
+function resetScroll(){ leftPane.scrollTop = rightPane.scrollTop = gutterPane.scrollTop = 0; }
+
+/* Smooth always-locked scroll sync (rAF + driver) */
+let driverPane = leftPane;
+[leftPane, rightPane, gutterPane].forEach(p => {
+  p.addEventListener('mouseenter', () => driverPane = p);
+  p.addEventListener('touchstart', () => driverPane = p, {passive:true});
+  p.addEventListener('pointerdown', () => driverPane = p);
+});
+function syncLoop(){
+  const t = driverPane.scrollTop;
+  if (leftPane !== driverPane && leftPane.scrollTop !== t) leftPane.scrollTop = t;
+  if (rightPane !== driverPane && rightPane.scrollTop !== t) rightPane.scrollTop = t;
+  if (gutterPane !== driverPane && gutterPane.scrollTop !== t) gutterPane.scrollTop = t;
+  requestAnimationFrame(syncLoop);
+}
+requestAnimationFrame(syncLoop);
+
+/* ==============================
+   Load & Align
+============================== */
+function loadFile(e, isLeft){
+  const file = e.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = evt => {
+    try{
+      const json = JSON.parse(evt.target.result);
+      if(!Array.isArray(json)) return alert("Top-level JSON must be an array of objects.");
+      if(isLeft) leftData = json; else rightData = json;
+      currentPage = 1;
+      renderIfReady();
+      resetScroll();
+    }catch(err){ alert("Invalid JSON: " + err.message); }
+  };
+  reader.readAsText(file);
+}
+
+function renderIfReady(){
+  if(!leftData || !rightData) return;
+
+  // 1) Compute semantic alignment across FULL arrays (global)
+  alignment = computeAlignment(leftData, rightData);
+
+  // 2) Build page slice from alignment (page over aligned pairs)
+  const totalPairs = alignment.length;
+  totalPages = Math.max(1, Math.ceil(totalPairs / pageSize));
+  if (currentPage > totalPages) currentPage = totalPages;
+
+  const start = (currentPage - 1) * pageSize;
+  const end = Math.min(totalPairs, start + pageSize);
+  pageInfo.textContent = `Page ${currentPage} of ${totalPages}`;
+  prevBtn.disabled = currentPage <= 1;
+  nextBtn.disabled = currentPage >= totalPages;
+
+  const pagePairs = alignment.slice(start, end); // [{l,r}]
+
+  const validatedSet = buildValidatedSet(leftData); // `${i}:${path}`
+
+  // 3) Build unified rows for page pairs
+  const rows = buildRowsFromAlignedPairs(pagePairs, validatedSet);
+  renderRows(rows);
+}
+
+/* ==============================
+   Semantic Alignment (Needleman–Wunsch with similarity)
+============================== */
+function computeAlignment(leftArr, rightArr){
+  const L = leftArr.length, R = rightArr.length;
+
+  // Token sets for similarity (Jaccard)
+  const leftTokens = new Array(L);
+  const rightTokens = new Array(R);
+  for(let i=0;i<L;i++) leftTokens[i] = objectTokens(leftArr[i]?.extraction ?? {});
+  for(let j=0;j<R;j++) rightTokens[j] = objectTokens(rightArr[j]?.extraction ?? {});
+
+  // Parameters (tweakable)
+  const GAP = 0.20;          // gap penalty
+  const MIN_SIM = 0.35;      // min similarity to prefer match over gaps
+  const LOW_SIM_PEN = 0.25;  // extra penalty when sim < MIN_SIM
+
+  const dp = Array(L+1).fill(null).map(()=>Array(R+1).fill(0));
+  const bt = Array(L+1).fill(null).map(()=>Array(R+1).fill(0)); // 0 diag, 1 up (del), 2 left (ins)
+
+  // Init
+  for(let i=1;i<=L;i++){ dp[i][0] = dp[i-1][0] - GAP; bt[i][0] = 1; }
+  for(let j=1;j<=R;j++){ dp[0][j] = dp[0][j-1] - GAP; bt[0][j] = 2; }
+
+  function sim(i,j){
+    const s = jaccard(leftTokens[i], rightTokens[j]);
+    return (s >= MIN_SIM) ? s : (s - LOW_SIM_PEN);
+  }
+
+  // Fill
+  for(let i=1;i<=L;i++){
+    for(let j=1;j<=R;j++){
+      const scoreDiag = dp[i-1][j-1] + sim(i-1,j-1);
+      const scoreUp   = dp[i-1][j]   - GAP; // deletion (left only)
+      const scoreLeft = dp[i][j-1]   - GAP; // insertion (right only)
+      let best = scoreDiag, dir = 0;
+      if(scoreUp > best){ best = scoreUp; dir = 1; }
+      if(scoreLeft > best){ best = scoreLeft; dir = 2; }
+      dp[i][j] = best; bt[i][j] = dir;
+    }
+  }
+
+  // Backtrack -> aligned pairs
+  const pairs = [];
+  let i=L, j=R;
+  while(i>0 || j>0){
+    const dir = bt[i][j];
+    if(i>0 && j>0 && dir===0){
+      pairs.push({l:i-1, r:j-1});
+      i--; j--;
+    } else if(i>0 && (j===0 || dir===1)){
+      pairs.push({l:i-1, r:null}); // removed on right
+      i--;
+    } else {
+      pairs.push({l:null, r:j-1}); // added on right
+      j--;
+    }
+  }
+  pairs.reverse();
+  return pairs;
+}
+
+/* Tokenize object (keys + primitive values) */
+function objectTokens(obj){
+  const tokens = new Set();
+  walk(obj, '');
+  return tokens;
+
+  function walk(node, path){
+    if(Array.isArray(node)){
+      tokens.add('arrlen:'+node.length);
+      for(const v of node){
+        if(v && typeof v==='object') walk(v, path);
+        else addPrim(v);
+      }
+      return;
+    }
+    if(node && typeof node==='object'){
+      for(const k of Object.keys(node)){
+        tokens.add(('k:'+k).toLowerCase());
+        const v = node[k];
+        if(v && typeof v==='object') walk(v, path ? path+'.'+k : k);
+        else addPrim(v);
+      }
+      return;
+    }
+    addPrim(node);
+  }
+  function addPrim(v){
+    if(v==null) { tokens.add('null'); return; }
+    const s = String(v).toLowerCase();
+    for(const t of s.split(/[^a-z0-9_]+/g)){
+      if(t) tokens.add('v:'+t);
+    }
+  }
+}
+
+/* Jaccard similarity */
+function jaccard(aSet, bSet){
+  if(aSet.size===0 && bSet.size===0) return 1;
+  let inter=0;
+  if(aSet.size < bSet.size){
+    for(const t of aSet) if(bSet.has(t)) inter++;
+  } else {
+    for(const t of bSet) if(aSet.has(t)) inter++;
+  }
+  const uni = aSet.size + bSet.size - inter;
+  return uni ? (inter/uni) : 0;
+}
+
+/* ==============================
+   Build rows from aligned pairs
+============================== */
+function buildRowsFromAlignedPairs(pairs, validatedSet){
+  const rows = [];
+  const indent = '  ';
+
+  // Header '['
+  pushRow('[','', '', null, null);
+  // We also print '[' on right for symmetry
+  rows[0].rightText = '[';
+
+  for(const pr of pairs){
+    const lIdx = pr.l, rIdx = pr.r;
+    const lObj = (lIdx!=null) ? (leftData[lIdx]?.extraction ?? {}) : null;
+    const rObj = (rIdx!=null) ? (rightData[rIdx]?.extraction ?? {}) : null;
+
+    // Open object
+    pushRow(indent+'{', indent+'{', '', lIdx, null);
+
+    if(lObj && rObj){
+      // both sides exist → usual union diff
+      emitObject(lIdx, rIdx, lObj, rObj, indent+'  ');
+    } else if(lObj && !rObj){
+      // removed block (exists only on left)
+      emitSingleSideBlock(lIdx, lObj, 'removed', indent+'  ', 'left');
+    } else if(!lObj && rObj){
+      // added block (exists only on right)
+      emitSingleSideBlock(rIdx, rObj, 'added', indent+'  ', 'right');
+    }
+
+    // Close object with comma (we’ll let the very last object also have a trailing comma for simplicity)
+    pushRow(indent+'},', indent+'},', '', lIdx ?? rIdx, null);
+  }
+
+  // Footer ']'
+  pushRow(']','', '', null, null);
+  rows[rows.length-1].rightText = ']';
+
+  return rows;
+
+  function emitObject(lIdx, rIdx, l, r, ind){
+    const keys = Array.from(new Set([...Object.keys(l), ...Object.keys(r)]));
+    keys.forEach((k, i) => {
+      const lp = l[k], rp = r[k];
+      const path = k;
+      emitField(lIdx, rIdx, path, lp, rp, ind, i<keys.length-1);
+    });
+  }
+
+  function emitField(lIdx, rIdx, basePath, lVal, rVal, ind, withComma){
+    const comma = withComma ? ',' : '';
+    const keyTxt = JSON.stringify(basePath) + ': ';
+
+    // Arrays treated as leaf line
+    if (Array.isArray(lVal) || Array.isArray(rVal)) {
+      const lRendered = Array.isArray(lVal) ? JSON.stringify(lVal) : 'null';
+      const rRendered = Array.isArray(rVal) ? JSON.stringify(rVal) : 'null';
+      pushLeaf(lIdx, rIdx, basePath,
+        ind + keyTxt + lRendered + comma,
+        ind + keyTxt + rRendered + comma,
+        validatedSet);
+      return;
+    }
+
+    const lObj = lVal && typeof lVal==='object' ? lVal : null;
+    const rObj = rVal && typeof rVal==='object' ? rVal : null;
+
+    if(lObj || rObj){
+      pushRow(ind + JSON.stringify(basePath) + ': {', ind + JSON.stringify(basePath) + ': {', '', lIdx ?? rIdx, null);
+      const keys = Array.from(new Set([...(lObj?Object.keys(lObj):[]), ...(rObj?Object.keys(rObj):[])]));
+      keys.forEach((k,i)=>{
+        emitField(lIdx, rIdx, basePath + '.' + k, lObj?lObj[k]:undefined, rObj?rObj[k]:undefined, ind+'  ', i<keys.length-1);
+      });
+      pushRow(ind + '}' + comma, ind + '}' + comma, '', lIdx ?? rIdx, null);
+      return;
+    }
+
+    // primitives / null / undefined
+    const lRendered = renderPrim(lVal);
+    const rRendered = renderPrim(rVal);
+    pushLeaf(lIdx, rIdx, basePath,
+      ind + keyTxt + lRendered + comma,
+      ind + keyTxt + rRendered + comma,
+      validatedSet);
+  }
+
+  function emitSingleSideBlock(idx, obj, blockClass, ind, side){
+    // Print full object on the side that exists; blank on the other side; mark lines as added/removed
+    const keys = Object.keys(obj);
+    if(keys.length===0){
+      pushRow(ind + '// empty', ind + '// empty', blockClass, idx, null);
+      return;
+    }
+    // open each nested as we render
+    for(const k of keys){
+      const v = obj[k];
+      const path = k;
+      if (Array.isArray(v)){
+        const t = ind + JSON.stringify(k) + ': ' + JSON.stringify(v) + ',';
+        if(side==='left') pushRow(t, '', blockClass, idx, path);
+        else pushRow('', t, blockClass, idx, path);
+      } else if(v && typeof v==='object'){
+        // open
+        if(side==='left') pushRow(ind + JSON.stringify(k) + ': {', '', blockClass, idx, null);
+        else pushRow('', ind + JSON.stringify(k) + ': {', blockClass, idx, null);
+        // recurse fields
+        const kk = Object.keys(v);
+        kk.forEach((ck, ci) => {
+          const cv = v[ck];
+          const cpath = path + '.' + ck;
+          const line = ind+'  ' + JSON.stringify(ck) + ': ' + renderPrim(cv) + (ci<kk.length-1?',':'');
+          if(side==='left') pushRow(line, '', blockClass, idx, cpath);
+          else pushRow('', line, blockClass, idx, cpath);
+        });
+        // close
+        if(side==='left') pushRow(ind + '},', '', blockClass, idx, null);
+        else pushRow('', ind + '},', blockClass, idx, null);
+      } else {
+        const t = ind + JSON.stringify(k) + ': ' + renderPrim(v) + ',';
+        if(side==='left') pushRow(t, '', blockClass, idx, path);
+        else pushRow('', t, blockClass, idx, path);
+      }
+    }
+  }
+
+  function renderPrim(v){ return v==null ? 'null' : JSON.stringify(v); }
+
+  function pushLeaf(lIdx, rIdx, path, lText, rText, validatedSet){
+    // Determine per-field kind (diff/error/missing)
+    const lv = (lIdx!=null) ? deepGet(leftData[lIdx]?.extraction, path) : undefined;
+    const rv = (rIdx!=null) ? deepGet(rightData[rIdx]?.extraction, path) : undefined;
+    const leftHas = lv !== undefined;
+    const rightHas = rv !== undefined;
+
+    let kind = '';
+    if(leftHas && !rightHas || !leftHas && rightHas){
+      // in a matched object: mark as missing; in added/removed blocks we color via blockClass already
+      kind = 'missing';
+    } else if(leftHas && rightHas){
+      if(!valuesEqual(lv, rv)) kind = (validatedSet.has(`${lIdx}:${path}`) ? 'error' : 'diff');
+    }
+    pushRow(lText, rText, kind, lIdx ?? rIdx, path);
+  }
+
+  function pushRow(leftText, rightText, kind, idx, path){
+    rows.push({ leftText, rightText, kind, idx, path });
+  }
+}
+
+/* ==============================
+   Validated set
+============================== */
+function buildValidatedSet(left){
+  const s = new Set(); // `${i}:${path}`
+  for (let i=0;i<left.length;i++){
+    const arr = left[i]?.validated || [];
+    for (const p of arr) s.add(`${i}:${p}`);
+  }
+  return s;
+}
+
+/* ==============================
+   Rendering
+============================== */
+function renderRows(rows){
+  leftCode.innerHTML = '';
+  rightCode.innerHTML = '';
+  gutterCode.innerHTML = '';
+
+  const lFrag = document.createDocumentFragment();
+  const rFrag = document.createDocumentFragment();
+  const gFrag = document.createDocumentFragment();
+
+  rows.forEach((row, i) => {
+    // Left line
+    const l = document.createElement('div');
+    l.className = 'line' + (row.kind ? ` ${row.kind}` : '');
+    l.dataset.row = i;
+    const lNum = document.createElement('div'); lNum.className = 'ln'; lNum.textContent = String(i+1);
+    const lTxt = document.createElement('div'); lTxt.className = 'txt'; lTxt.textContent = row.leftText;
+    l.appendChild(lNum); l.appendChild(lTxt);
+    lFrag.appendChild(l);
+
+    // Gutter line with controls (only for leaf lines with a path and with a diff-ish kind)
+    const g = document.createElement('div');
+    g.className = 'gutter-line' + (row.kind ? ` ${row.kind}` : '');
+    g.dataset.row = i;
+    const controls = document.createElement('div');
+    controls.className = 'controls diff-only';
+    if (row.path && (row.kind==='diff' || row.kind==='error' || row.kind==='missing' || row.kind==='added' || row.kind==='removed')) {
+      const btnLeft = document.createElement('button'); btnLeft.textContent = '◀'; btnLeft.title = 'Accept LEFT value';
+      const btnRight = document.createElement('button'); btnRight.textContent = '▶'; btnRight.title = 'Accept RIGHT value';
+      btnLeft.addEventListener('click', (ev) => { ev.stopPropagation(); acceptValue(row.idx, row.path, 'left', i); });
+      btnRight.addEventListener('click', (ev) => { ev.stopPropagation(); acceptValue(row.idx, row.path, 'right', i); });
+      controls.appendChild(btnLeft); controls.appendChild(btnRight);
+    }
+    g.appendChild(controls);
+    gFrag.appendChild(g);
+
+    // Right line
+    const r = document.createElement('div');
+    r.className = 'line' + (row.kind ? ` ${row.kind}` : '');
+    r.dataset.row = i;
+    const rNum = document.createElement('div'); rNum.className = 'ln'; rNum.textContent = String(i+1);
+    const rTxt = document.createElement('div'); rTxt.className = 'txt'; rTxt.textContent = row.rightText || '';
+    r.appendChild(rNum); r.appendChild(rTxt);
+    rFrag.appendChild(r);
+  });
+
+  leftCode.appendChild(lFrag);
+  gutterCode.appendChild(gFrag);
+  rightCode.appendChild(rFrag);
+
+  wireHoverSync();
+  padColumnsEqualHeight();
+}
+
+/* Hover sync */
+function wireHoverSync(){
+  const all = [
+    ...leftCode.querySelectorAll('.line'),
+    ...rightCode.querySelectorAll('.line'),
+    ...gutterCode.querySelectorAll('.gutter-line')
+  ];
+  const byRow = {};
+  all.forEach(el => { const row = el.dataset.row; (byRow[row] ||= []).push(el); });
+  Object.values(byRow).forEach(group => {
+    group.forEach(el => {
+      el.addEventListener('mouseenter', () => group.forEach(x => x.classList.add('hover')));
+      el.addEventListener('mouseleave', () => group.forEach(x => x.classList.remove('hover')));
+    });
+  });
+}
+
+/* Equal-height padding */
+function padColumnsEqualHeight(){
+  const leftCount   = leftCode.children.length;
+  const rightCount  = rightCode.children.length;
+  const gutterCount = gutterCode.children.length;
+  const maxCount = Math.max(leftCount, rightCount, gutterCount);
+
+  function mkPadLeft(i){
+    const l = document.createElement('div');
+    l.className = 'pad-line'; l.dataset.row = `pad-${i}`;
+    const ln = document.createElement('div'); ln.className = 'ln'; ln.textContent = '';
+    const txt = document.createElement('div'); txt.className = 'txt'; txt.textContent = '...';
+    l.appendChild(ln); l.appendChild(txt);
+    return l;
+  }
+  function mkPadRight(i){ return mkPadLeft(i); }
+  function mkPadGutter(i){
+    const g = document.createElement('div');
+    g.className = 'pad-gutter-line'; g.dataset.row = `pad-${i}`;
+    const inner = document.createElement('div'); inner.className = 'txt'; inner.textContent = '...';
+    g.appendChild(inner);
+    return g;
+  }
+  for(let i = leftCount; i < maxCount; i++)  leftCode.appendChild(mkPadLeft(i));
+  for(let i = rightCount; i < maxCount; i++) rightCode.appendChild(mkPadRight(i));
+  for(let i = gutterCount; i < maxCount; i++) gutterCode.appendChild(mkPadGutter(i));
+}
+
+/* ==============================
+   Accept / Validate (global indices)
+============================== */
+function acceptValue(objIndex, fieldPath, side, rowIndex){
+  if (objIndex == null || !fieldPath) return;
+  const lObj = leftData[objIndex];
+  const rObj = rightData[objIndex];
+  if (!lObj || !rObj) return;
+
+  const lVal = deepGet(lObj.extraction, fieldPath);
+  const rVal = deepGet(rObj.extraction, fieldPath);
+  const chosen = (side === 'left') ? lVal : rVal;
+
+  deepSet(lObj.extraction, fieldPath, chosen);
+  deepSet(rObj.extraction, fieldPath, chosen);
+
+  if (!Array.isArray(lObj.validated)) lObj.validated = [];
+  if (!lObj.validated.includes(fieldPath)) lObj.validated.push(fieldPath);
+
+  // Recompute alignment after changes (keeps blocks smart)
+  alignment = computeAlignment(leftData, rightData);
+
+  // Preserve scroll pos of driver
+  const s = driverPane.scrollTop;
+  renderIfReady();
+  driverPane.scrollTop = s;
+
+  // Flash row if still visible
+  const l = leftCode.querySelector(`.line[data-row="${rowIndex}"]`);
+  const r = rightCode.querySelector(`.line[data-row="${rowIndex}"]`);
+  const g = gutterCode.querySelector(`.gutter-line[data-row="${rowIndex}"]`);
+  [l,r,g].forEach(el => { if(el){ el.classList.add('flash'); setTimeout(()=>el.classList.remove('flash'), 600); } });
+}
+
+/* ==============================
+   Utilities
+============================== */
+function valuesEqual(a,b){
+  if (a === b) return true;
+  if (a == null && b == null) return true;
+  try { return JSON.stringify(a) === JSON.stringify(b); } catch { return false; }
+}
+function deepGet(root, path){
+  if (!root) return undefined;
+  const parts = path.split('.');
+  let cur = root;
+  for (const p of parts){
+    if (cur == null || typeof cur !== 'object') return undefined;
+    cur = cur[p];
+  }
+  return cur;
+}
+function deepSet(root, path, value){
+  const parts = path.split('.');
+  let cur = root;
+  for (let i=0;i<parts.length-1;i++){
+    const p = parts[i];
+    if (!cur[p] || typeof cur[p] !== 'object') cur[p] = {};
+    cur = cur[p];
+  }
+  cur[parts[parts.length-1]] = value;
+}
+function downloadLeft(){
+  if(!leftData) return alert("No left JSON loaded.");
+  const blob = new Blob([JSON.stringify(leftData, null, 2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'validated_left.json';
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+</script>
+</body>
+</html>
